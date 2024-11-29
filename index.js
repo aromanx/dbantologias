@@ -2,6 +2,8 @@ const express = require("express");
 const app = express();
 const Sequelize = require("sequelize");
 const cors = require("cors");
+const fs = require('fs');
+const path = require('path');
 
 if (process.env.NODE_ENV !== 'production') {
   require('dotenv').config();
@@ -103,11 +105,95 @@ app.use(cors({
   optionsSuccessStatus: 204,
 }));
 
-// Database Initialization Function
+// Ruta para exportar la base de datos
+app.get("/database/export", async (req, res) => {
+  try {
+    // Obtener todos los datos de las tablas
+    const autores = await Autor.findAll();
+    const antologias = await Antologia.findAll();
+    const likes = await Like.findAll();
+
+    const databaseDump = {
+      autores,
+      antologias,
+      likes
+    };
+
+    // Crear el archivo SQL
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `database_backup_${timestamp}.json`;
+    const filePath = path.join(__dirname, fileName);
+
+    fs.writeFileSync(filePath, JSON.stringify(databaseDump, null, 2));
+
+    // Enviar el archivo como respuesta
+    res.download(filePath, fileName, (err) => {
+      if (err) {
+        console.error('Error al enviar archivo:', err);
+      }
+      // Eliminar el archivo después de enviarlo
+      fs.unlinkSync(filePath);
+    });
+  } catch (error) {
+    console.error('Error al exportar base de datos:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Ruta para importar la base de datos
+app.post("/database/import", express.json({limit: '50mb'}), async (req, res) => {
+  try {
+    const { autores, antologias, likes } = req.body;
+
+    // Importar datos en orden para mantener las relaciones
+    if (autores) {
+      await Autor.bulkCreate(autores, {
+        ignoreDuplicates: true
+      });
+    }
+
+    if (antologias) {
+      await Antologia.bulkCreate(antologias, {
+        ignoreDuplicates: true
+      });
+    }
+
+    if (likes) {
+      await Like.bulkCreate(likes, {
+        ignoreDuplicates: true
+      });
+    }
+
+    res.status(200).json({ message: "Base de datos importada exitosamente" });
+  } catch (error) {
+    console.error('Error al importar base de datos:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Ruta para reinicializar la base de datos
+app.post("/database/reset", async (req, res) => {
+  try {
+    // Eliminar todos los registros de las tablas en orden
+    await Like.destroy({ where: {}, force: true });
+    await Antologia.destroy({ where: {}, force: true });
+    await Autor.destroy({ where: {}, force: true });
+
+    // Reinicializar la base de datos con datos por defecto
+    await initializeDatabase();
+
+    res.status(200).json({ message: "Base de datos reinicializada exitosamente" });
+  } catch (error) {
+    console.error('Error al reinicializar base de datos:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Modificar la función initializeDatabase para que sea más flexible
 async function initializeDatabase() {
   try {
     // Sync models with database
-    await sequelize.sync({ alter: true });
+    await sequelize.sync({ force: true }); // Cambiado de alter a force para asegurar una limpieza completa
     console.log('Database and tables synchronized successfully');
 
     // Check and create default author if none exists
@@ -137,8 +223,11 @@ async function initializeDatabase() {
         console.log('Default anthology created');
       }
     }
+
+    return true;
   } catch (error) {
     console.error('Database initialization error:', error);
+    throw error;
   }
 }
 
